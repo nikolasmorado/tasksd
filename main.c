@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <string.h>
+
 
 /*
  * NAME
@@ -10,6 +12,8 @@
  *
  * SYNOPSIS
  *      tasksd [ <task> [ <description> ] ]
+ *      tasksd ls <task>
+ *      tasksd rm <task>
  *
  * DESCRIPTION
  *      Stores tasks in file hierarchy in tasksd dir
@@ -39,6 +43,7 @@
  *
  *
  * ARGUMENTS
+ *      operation    can specify some operations (ls, rm)
  *      path         slash delimited task (ex: project/thing/task)
  *      description  quote wrapped text
  *
@@ -46,11 +51,15 @@
  *      (none)            open fzf browser for all tasks
  *      path              print description of task at path, fzf if no .taskd
  *      path description  create or overwrite task at path
+ *      rm path           delete task
+ *      ls path           list out subtasks
  *
  * EXAMPLES
  *      tasksd
  *      tasksd work/saas/github
  *      tasksd winder/electrical/power "build perfboard of power circuit"
+ *      tasksd ls winder
+ *      tasksd rm winder/cad
  *
  * DEPENDENCIES
  *      fzf(1)  required for no arg mode
@@ -64,11 +73,22 @@
 int
 main(int argc, char *argv[]) {
         struct stat st;
+        int ret;
         if (stat(".local/state/tasksd", &st) != 0 || !S_ISDIR(st.st_mode))
                 mkdir(".local/state/tasksd", 0755);
 
-        chdir(getenv("HOME"));
-        chdir(".local/state/tasksd");
+
+        ret = chdir(getenv("HOME"));
+        if (ret == -1) {
+                printf("error finding home dir");
+                return -1;
+        }
+
+        ret = chdir(".local/state/tasksd");
+        if (ret == -1) {
+                printf("error finding tasks dir");
+                return -1;
+        }
 
         char *fzfcmd =
                 "find . -name '.taskd' | sed 's|^./||; s|/.taskd$||' | sort | "
@@ -81,20 +101,46 @@ main(int argc, char *argv[]) {
                 "--preview 'cat {1}/.taskd'";
 
         if (argc <= 1) {
-                system(fzfcmd);
+                ret = system(fzfcmd);
+
+                if (ret == 1) {
+                        printf ("no tasks\n");
+                        return 0;
+                }
+
+                if (ret == 2 || ret == 126 || ret == 127) {
+                        printf ("fzf error: %d", ret);
+                        return -1;
+                }
+
                 printf("no path\n");
                 return 0;
         }
 
         if (argc == 2) {
-
                 if (stat(argv[1], &st) == 0 && S_ISDIR(st.st_mode)) {
-                                chdir(argv[1]);
-                                system(fzfcmd);
+                                ret = chdir(argv[1]);
+
+                                if (ret == -1) {
+                                        return -1;
+                                } 
+
+                                ret = system(fzfcmd);
+
+                                if (ret == 1) {
+                                        printf ("no tasks\n");
+                                        return 0;
+                                }
+
+                                if (ret == 2 || ret == 126 || ret == 127) {
+                                        printf ("fzf error: %d", ret);
+                                        return -1;
+                                }
+
                                 return 0;
                 }
 
-                char fp[strlen(argv[1]) + 8];
+                char fp[strlen(argv[1] + 8)];
                 sprintf(fp, "%s/.taskd", argv[1]);
                 FILE *f = fopen(fp, "r");
 
@@ -116,9 +162,45 @@ main(int argc, char *argv[]) {
                 return 0;
         }
 
-        if (argc < 3)
-                return -1;
-        
+        if (strcmp(argv[1], "rm") == 0) {
+                char fp[strlen(argv[2]) + 8];
+                sprintf(fp, "%s/.taskd", argv[2]);
+                unlink(fp);
+                char *p = fp + strlen(fp);
+                while (p > fp) {
+                        rmdir(fp);
+                        while (p > fp && *--p != '/');
+                        *p = '\0';
+                }
+                return 0;
+        }
+
+        if (strcmp(argv[1], "ls") == 0) {
+                if (stat(argv[2], &st) == 0 && S_ISDIR(st.st_mode)) {
+                        DIR *d = opendir(argv[2]);
+                        
+                        if (!d) {
+                                return -1;
+                        }
+                        
+                        struct dirent *e;
+                        
+                        while ((e = readdir(d))) { 
+
+                                if (
+                                        strcmp(".", e->d_name) == 0 ||
+                                        strcmp("..", e->d_name) == 0 ||
+                                        strcmp(".taskd", e->d_name) == 0
+                                ) {
+                                        continue;
+                                }
+
+                                printf("%s \n", e->d_name);
+                        }       
+
+                        return 0;
+                }
+        }
 
         char *p = argv[1];
         while (*p != '\0') {
